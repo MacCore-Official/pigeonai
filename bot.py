@@ -5,27 +5,30 @@ import os
 import json
 from groq import Groq
 
-# --- Persistent Memory Setup ---
+# --- Persistent Memory ---
 SETTINGS_FILE = "pigeon_settings.json"
 
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
-        with open(SETTINGS_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(SETTINGS_FILE, "r") as f:
+                return json.load(f)
+        except:
+            pass
     return {"ai_channel_id": None, "poop_count": 0}
 
 def save_settings(data):
     with open(SETTINGS_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
-# --- Bot Initialization ---
+# --- Bot Setup ---
 TOKEN = os.getenv("DISCORD_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 class PigeonBot(commands.Bot):
     def __init__(self):
-        intents = discord.Intents.default()
-        intents.message_content = True
+        # ENABLE ALL INTENTS
+        intents = discord.Intents.all() 
         super().__init__(command_prefix="p!", intents=intents)
         self.groq_client = Groq(api_key=GROQ_API_KEY)
         self.settings = load_settings()
@@ -36,16 +39,18 @@ class PigeonBot(commands.Bot):
 
 bot = PigeonBot()
 
-# --- Slash Commands (The UI) ---
-
 @bot.tree.command(name="serverinfo", description="View the nest statistics.")
 async def serverinfo(interaction: discord.Interaction):
     guild = interaction.guild
-    embed = discord.Embed(title=f"🐦 {guild.name}", color=0x95a5a6) # Pigeon Grey
-    embed.add_field(name="Total Birds (Members)", value=guild.member_count, inline=True)
-    embed.add_field(name="Nest Owner", value=guild.owner.mention, inline=True)
+    # Fixed the crash by checking if owner exists
+    owner = guild.owner.mention if guild.owner else "The Head Pigeon"
+    
+    embed = discord.Embed(title=f"🐦 {guild.name}", color=0x95a5a6)
+    embed.add_field(name="Total Birds", value=guild.member_count, inline=True)
+    embed.add_field(name="Nest Owner", value=owner, inline=True)
     embed.add_field(name="Poops Delivered", value=bot.settings.get("poop_count", 0), inline=True)
-    embed.set_thumbnail(url=guild.icon.url if guild.icon else None)
+    if guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
     embed.set_footer(text="Pigeon All-in-One • Powered by Groq")
     await interaction.response.send_message(embed=embed)
 
@@ -56,42 +61,34 @@ async def set_ai(interaction: discord.Interaction, channel: discord.TextChannel)
     save_settings(bot.settings)
     await interaction.response.send_message(f"🐦 **COO!** I will now haunt {channel.mention} with my AI brain.")
 
-@bot.tree.command(name="poop", description="Moderate a user with a targeted pigeon strike.")
+@bot.tree.command(name="poop", description="Targeted pigeon strike.")
 async def poop(interaction: discord.Interaction, member: discord.Member):
-    bot.settings["poop_count"] += 1
+    bot.settings["poop_count"] = bot.settings.get("poop_count", 0) + 1
     save_settings(bot.settings)
-    
-    embed = discord.Embed(
-        title="⚠️ PIGEON MODERATION", 
-        description=f"**PIGEON DON'T LIKE!**\n\n{member.mention}, you just got pooped on! 💩🐦", 
-        color=0xFF4500
-    )
-    embed.set_image(url="https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExNHJibXNoZzZyeXoxZzF6eXoxZzF6eXoxZzF6eXoxZzF6eXoxZyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/l3vR9RE5Xkk9778is/giphy.gif")
+    embed = discord.Embed(title="PIGEON DON'T LIKE!", description=f"**PIGEON POOP ON YOU {member.mention}!** 💩🐦", color=0xFF4500)
+    embed.set_image(url="https://media.giphy.com/media/l3vR9RE5Xkk9778is/giphy.gif")
     await interaction.response.send_message(embed=embed)
 
-# --- AI Logic (Groq) ---
-
+# --- AI Logic ---
 @bot.event
 async def on_message(message):
     if message.author == bot.user:
         return
 
-    # Only reply if it's the designated AI channel
-    if bot.settings["ai_channel_id"] and message.channel.id == bot.settings["ai_channel_id"]:
+    if bot.settings.get("ai_channel_id") and message.channel.id == bot.settings["ai_channel_id"]:
         async with message.channel.typing():
             try:
                 chat_completion = bot.groq_client.chat.completions.create(
                     messages=[
-                        {
-                            "role": "system",
-                            "content": "You are Pigeon, a chaotic but funny Discord bot. You love bread, hate statues, and use bird puns. Occasionally say 'Coo!' or threathen to poop on things."
-                        },
+                        {"role": "system", "content": "You are Pigeon, a chaotic Discord bot. You love bread and say 'Coo!'."},
                         {"role": "user", "content": message.content}
                     ],
                     model="llama3-8b-8192",
                 )
-                await message.reply(chat_completion.choices[0].message.content)
+                response = chat_completion.choices[0].message.content
+                await message.reply(response)
             except Exception as e:
-                print(f"Error: {e}")
+                print(f"AI Error: {e}")
+                # Don't say anything so it doesn't spam errors
 
 bot.run(TOKEN)

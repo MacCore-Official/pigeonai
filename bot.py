@@ -6,8 +6,7 @@ import json
 import sqlite3
 from groq import Groq
 
-# --- Database Setup ---
-# Using a local path that doesn't require special folder permissions
+# --- Database Setup (Persistent Memory) ---
 DB_PATH = "pigeon_infinity.db"
 
 def init_db():
@@ -48,7 +47,7 @@ def save_chat(channel_id, role, content):
     conn.commit()
     conn.close()
 
-def get_history(channel_id, limit=15):
+def get_history(channel_id, limit=6):
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -59,7 +58,7 @@ def get_history(channel_id, limit=15):
     except:
         return []
 
-# --- Setup ---
+# --- Bot Setup ---
 TOKEN = os.getenv("DISCORD_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 LOG_CHANNEL_ID = 1477480005779853477 
@@ -73,7 +72,7 @@ class PigeonBot(commands.Bot):
 
     async def setup_hook(self):
         await self.tree.sync()
-        print(f"Pigeon Memory Online. Made by Willz (typertyper)")
+        print(f"Pigeon is live. Made by Willz (typertyper)")
 
 bot = PigeonBot()
 
@@ -107,7 +106,7 @@ async def poop(interaction: discord.Interaction, member: discord.Member):
     embed.set_footer(text="Made by Willz (typertyper)")
     await interaction.response.send_message(embed=embed)
 
-# --- AI & Logging ---
+# --- AI Brain & Personality ---
 
 @bot.event
 async def on_message(message):
@@ -117,37 +116,43 @@ async def on_message(message):
     if ai_channel_id and str(message.channel.id) == str(ai_channel_id):
         async with message.channel.typing():
             try:
-                # 1. Save and Get History
+                # 1. Memory Logic (6 message limit to prevent 429 errors)
                 user_msg = f"{message.author.display_name}: {message.content}"
                 save_chat(message.channel.id, "user", user_msg)
-                history = get_history(message.channel.id)
+                history = get_history(message.channel.id, limit=6)
                 
-                # 2. Build Gen Z Prompt
+                # 2. Personality Prompt
                 messages_to_send = [
-                    {"role": "system", "content": "You are Pigeon,You only max words is like 20 words. If someone is nice to you asking questions or talking, sure you can answer him and act all nice. but if he is swearing at u, swear back at hime in all caps. He is kind of gen z, for example using words like bruh, lol, dry. Just make him like a ai bot.  "}
+                    {
+                        "role": "system", 
+                        "content": "You are Pigeon. Max 20 words. If users are nice, be a nice Gen Z bot (bruh, lol, dry). IF THEY SWEAR AT YOU, SWEAR BACK IN ALL CAPS. Use 1 emoji. Be an AI bot fr."
+                    }
                 ] + history
 
-                # 3. Call Groq
+                # 3. Request (Using 8b-instant for speed & stability)
                 chat_completion = bot.groq_client.chat.completions.create(
                     messages=messages_to_send,
-                    model="llama-3.3-70b-versatile",
+                    model="llama-3.1-8b-instant",
+                    temperature=0.7
                 )
                 response = chat_completion.choices[0].message.content
 
-                # 4. Save and Log
+                # 4. Save Reply & Log to Log Channel
                 save_chat(message.channel.id, "assistant", response)
                 
                 log_chan = bot.get_channel(LOG_CHANNEL_ID)
                 if log_chan:
                     log_embed = discord.Embed(title="📜 Bird Log", color=0x95a5a6)
                     log_embed.add_field(name="User", value=message.author.name)
-                    log_embed.add_field(name="Chat", value=f"U: {message.content}\nP: {response}")
+                    log_embed.add_field(name="Chat", value=f"**U:** {message.content}\n**P:** {response}")
+                    log_embed.set_footer(text=f"Channel: {message.channel.name}")
                     await log_chan.send(embed=log_embed)
 
                 await message.reply(response)
             
             except Exception as e:
                 print(f"AI ERROR: {e}")
+                # This helps you see the error in Discord if it crashes
                 await message.reply(f"🐦 **BRAIN FREEZE:** `{str(e)[:50]}`")
 
 bot.run(TOKEN)

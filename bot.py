@@ -4,6 +4,7 @@ from discord import app_commands
 import os
 import sqlite3
 import datetime
+import random
 from groq import Groq
 
 # --- CONFIGURATION ---
@@ -48,7 +49,7 @@ class Moderation(commands.Cog):
         await member.ban(reason=reason)
         await ctx.send(f"🚫 {member.display_name} is deadass gone.")
 
-# --- COG: AI BRAIN ---
+# --- COG: AI BRAIN (The "AI Thing") ---
 class AIBrain(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -59,31 +60,35 @@ class AIBrain(commands.Cog):
         return [{"role": r, "content": c} for r, c in reversed(cursor.fetchall())]
 
     def save_msg(self, channel_id, role, content):
-        # Prevent Error 413 by trimming content to 500 chars
         Database.execute("INSERT INTO history (channel_id, role, content) VALUES (?, ?, ?)", (channel_id, role, content[:500]))
-        # Keep DB small
         Database.execute("DELETE FROM history WHERE timestamp NOT IN (SELECT timestamp FROM history WHERE channel_id=? ORDER BY timestamp DESC LIMIT 20)", (channel_id,))
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        if message.author.bot or message.content.startswith('p!'): return
+        # Ignore bots or prefix commands
+        if message.author.bot or message.content.startswith('p!'): 
+            return
         
-        ai_chan = Database.execute("SELECT value FROM settings WHERE key='ai_channel_id'").fetchone()
-        if ai_chan and str(message.channel.id) == ai_chan[0]:
+        # Check if this is the AI channel
+        ai_chan_data = Database.execute("SELECT value FROM settings WHERE key='ai_channel_id'").fetchone()
+        if ai_chan_data and str(message.channel.id) == ai_chan_data[0]:
             async with message.channel.typing():
                 try:
                     self.save_msg(message.channel.id, "user", f"{message.author.name}: {message.content}")
                     history = self.get_history(message.channel.id)
                     
-                    response = self.groq.chat.completions.create(
+                    # The Vibe Logic
+                    chat_completion = self.groq.chat.completions.create(
                         messages=[{"role": "system", "content": "You are Pigeon. Gen Z bird. Max 20 words. If nice, be chill (bruh, lol). If swearing, SWEAR BACK IN ALL CAPS. 1 emoji."}] + history,
                         model="llama-3.1-8b-instant"
-                    ).choices[0].message.content
+                    )
+                    response = chat_completion.choices[0].message.content
 
                     self.save_msg(message.channel.id, "assistant", response)
                     await self.log_interaction(message, response)
                     await message.reply(response)
                 except Exception as e:
+                    print(f"AI Error: {e}")
                     await message.reply(f"🐦 **BRAIN FREEZE:** `{str(e)[:40]}`")
 
     async def log_interaction(self, message, response):
@@ -91,7 +96,8 @@ class AIBrain(commands.Cog):
         if log_chan:
             embed = discord.Embed(title="📜 Bird Log", color=0x3498db, timestamp=datetime.datetime.now())
             embed.add_field(name="User", value=message.author.name, inline=True)
-            embed.add_field(name="Context", value=f"**U:** {message.content}\n**P:** {response}", inline=False)
+            embed.add_field(name="Conversation", value=f"**U:** {message.content}\n**P:** {response}", inline=False)
+            embed.set_footer(text=f"Channel: {message.channel.name} | Made by Willz")
             await log_chan.send(embed=embed)
 
 # --- MAIN BOT CLASS ---
@@ -106,15 +112,26 @@ class PigeonBot(commands.Bot):
         await self.tree.sync()
         print("🐦 Pigeon Pro is airborne. Made by Willz (typertyper)")
 
+    # --- Fun Extras ---
     @commands.hybrid_command(name="ping")
     async def ping(self, ctx):
         await ctx.send(f"🏓 Pong! {round(self.latency * 1000)}ms. fr.")
 
-    @app_commands.command(name="set_ai_channel")
+    @commands.hybrid_command(name="slap", description="Slap someone with a wet feather.")
+    async def slap(self, ctx, member: discord.Member):
+        await ctx.send(f"🪶 {ctx.author.mention} slapped {member.mention} with a wet feather! L.")
+
+    @commands.hybrid_command(name="rate", description="Pigeon rates your vibe.")
+    async def rate(self, ctx, item: str):
+        score = random.randint(0, 10)
+        await ctx.send(f"🐦 I rate **{item}** a solid {score}/10. No cap.")
+
+    # --- Setup Commands ---
+    @app_commands.command(name="set_ai_channel", description="Set where Pigeon talks.")
     @app_commands.checks.has_permissions(administrator=True)
     async def set_ai(self, interaction: discord.Interaction, channel: discord.TextChannel):
         Database.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('ai_channel_id', ?)", (str(channel.id),))
-        await interaction.response.send_message(f"🐦 Territory claimed: {channel.mention}")
+        await interaction.response.send_message(f"🐦 Territory claimed: {channel.mention}. Talk to me here bruh.")
 
 bot = PigeonBot()
 bot.run(TOKEN)

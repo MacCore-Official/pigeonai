@@ -49,7 +49,7 @@ class DiscordMemoryDB:
         mem_channel = self.bot.get_channel(MEMORY_CHANNEL_ID)
         if mem_channel:
             data = {"c": channel_id, "u": user_msg, "a": ai_msg}
-            # Send as a spoiler so it doesn't look ugly if a human looks at it
+            # Send as a spoiler so it doesn't look ugly
             await mem_channel.send(f"||{json.dumps(data)}||")
 
     async def get_memory(self, channel_id, limit=6):
@@ -286,6 +286,16 @@ class Utility(commands.Cog):
         LocalDB.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('ai_channel_id', ?)", (str(channel.id),))
         await ctx.send(f"🐦 Territory claimed. I will talk to people in {channel.mention}.")
 
+    @commands.hybrid_command(name="help", description="Show all bot commands.")
+    async def help_cmd(self, ctx):
+        embed = discord.Embed(title="🐦 Pigeon Titan Dashboard", description="Prefix: `p!` or use `/` commands.", color=0x3498db)
+        embed.add_field(name="🛡️ Mod", value="`purge`, `kick`, `ban`, `timeout`, `warn`, `warns`, `slowmode`, `lock`, `unlock`", inline=False)
+        embed.add_field(name="🍞 Econ", value="`bread`, `daily`, `gamble`, `givebread`, `leaderboard`", inline=False)
+        embed.add_field(name="🎉 Fun", value="`slap`, `rate`, `8ball`, `coinflip`, `fact`", inline=False)
+        embed.add_field(name="⚙️ Utils", value="`ping`, `serverinfo`, `userinfo`, `set_ai`", inline=False)
+        embed.set_footer(text="Made by Willz • v3.0 Ultimate")
+        await ctx.send(embed=embed)
+
 # ==========================================
 # COG: AI BRAIN (With Memory Channel & Ping)
 # ==========================================
@@ -381,20 +391,15 @@ class PigeonBot(commands.Bot):
         print(f"👨‍💻 Developer: Willz")
         print(f"=============================")
 
+    # THIS IS THE FIX: Waits for bot to log in before setting status
+    @status_loop.before_loop
+    async def before_status_loop(self):
+        await self.wait_until_ready()
+
     @tasks.loop(seconds=60)
     async def status_loop(self):
         statuses = ["p!help", "Dominating the sky", "Eating Bread 🍞", "Made by Willz", "Watching you..."]
         await self.change_presence(activity=discord.Game(random.choice(statuses)))
-
-    @commands.hybrid_command(name="help", description="Show all bot commands.")
-    async def help_cmd(self, ctx):
-        embed = discord.Embed(title="🐦 Pigeon Titan Dashboard", description="Prefix: `p!` or use `/` commands.", color=0x3498db)
-        embed.add_field(name="🛡️ Mod", value="`purge`, `kick`, `ban`, `timeout`, `warn`, `warns`, `slowmode`, `lock`, `unlock`", inline=False)
-        embed.add_field(name="🍞 Econ", value="`bread`, `daily`, `gamble`, `givebread`, `leaderboard`", inline=False)
-        embed.add_field(name="🎉 Fun", value="`slap`, `rate`, `8ball`, `coinflip`, `fact`", inline=False)
-        embed.add_field(name="⚙️ Utils", value="`ping`, `serverinfo`, `userinfo`, `set_ai`", inline=False)
-        embed.set_footer(text="Made by Willz • v3.0 Ultimate")
-        await ctx.send(embed=embed)
 
     async def on_command_error(self, ctx, error):
         if isinstance(error, commands.CommandOnCooldown):

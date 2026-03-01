@@ -1,158 +1,120 @@
 import discord
-from discord import app_commands
 from discord.ext import commands
+from discord import app_commands
 import os
-import json
 import sqlite3
+import datetime
 from groq import Groq
 
-# --- Database Setup (Persistent Memory) ---
-DB_PATH = "pigeon_infinity.db"
-
-def init_db():
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS settings 
-                     (key TEXT PRIMARY KEY, value TEXT)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS history 
-                     (channel_id INTEGER, role TEXT, content TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"DATABASE INIT ERROR: {e}")
-
-def get_setting(key, default=None):
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT value FROM settings WHERE key=?", (key,))
-        row = c.fetchone()
-        conn.close()
-        return row[0] if row else default
-    except:
-        return default
-
-def set_setting(key, value):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
-    conn.commit()
-    conn.close()
-
-def save_chat(channel_id, role, content):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("INSERT INTO history (channel_id, role, content) VALUES (?, ?, ?)", (channel_id, role, content))
-    conn.commit()
-    conn.close()
-
-def get_history(channel_id, limit=6):
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT role, content FROM history WHERE channel_id=? ORDER BY timestamp DESC LIMIT ?", (channel_id, limit))
-        rows = c.fetchall()
-        conn.close()
-        return [{"role": r, "content": c} for r, c in reversed(rows)]
-    except:
-        return []
-
-# --- Bot Setup ---
+# --- CONFIGURATION ---
 TOKEN = os.getenv("DISCORD_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-LOG_CHANNEL_ID = 1477480005779853477 
+LOG_CHANNEL_ID = 1477480005779853477
+DB_PATH = "pigeon_infinity.db"
 
+# --- DATABASE ENGINE ---
+class Database:
+    @staticmethod
+    def execute(query, params=()):
+        with sqlite3.connect(DB_PATH) as conn:
+            return conn.execute(query, params)
+
+    @staticmethod
+    def init():
+        Database.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)')
+        Database.execute('''CREATE TABLE IF NOT EXISTS history 
+                            (channel_id INTEGER, role TEXT, content TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+
+# --- COG: MODERATION ---
+class Moderation(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @commands.hybrid_command(name="purge", description="Delete messages fast.")
+    @commands.has_permissions(manage_messages=True)
+    async def purge(self, ctx, amount: int):
+        deleted = await ctx.channel.purge(limit=amount + 1)
+        await ctx.send(f"🧹 Cleaned {len(deleted)-1} messes bruh.", delete_after=3)
+
+    @commands.hybrid_command(name="kick", description="Kick a bird.")
+    @commands.has_permissions(kick_members=True)
+    async def kick(self, ctx, member: discord.Member, *, reason: str = "Vibe check failed."):
+        await member.kick(reason=reason)
+        await ctx.send(f"👢 {member.display_name} was booted fr.")
+
+    @commands.hybrid_command(name="ban", description="Perm-ban a bird.")
+    @commands.has_permissions(ban_members=True)
+    async def ban(self, ctx, member: discord.Member, *, reason: str = "Caught 4k."):
+        await member.ban(reason=reason)
+        await ctx.send(f"🚫 {member.display_name} is deadass gone.")
+
+# --- COG: AI BRAIN ---
+class AIBrain(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.groq = Groq(api_key=GROQ_API_KEY)
+
+    def get_history(self, channel_id):
+        cursor = Database.execute("SELECT role, content FROM history WHERE channel_id=? ORDER BY timestamp DESC LIMIT 6", (channel_id,))
+        return [{"role": r, "content": c} for r, c in reversed(cursor.fetchall())]
+
+    def save_msg(self, channel_id, role, content):
+        # Prevent Error 413 by trimming content to 500 chars
+        Database.execute("INSERT INTO history (channel_id, role, content) VALUES (?, ?, ?)", (channel_id, role, content[:500]))
+        # Keep DB small
+        Database.execute("DELETE FROM history WHERE timestamp NOT IN (SELECT timestamp FROM history WHERE channel_id=? ORDER BY timestamp DESC LIMIT 20)", (channel_id,))
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        if message.author.bot or message.content.startswith('p!'): return
+        
+        ai_chan = Database.execute("SELECT value FROM settings WHERE key='ai_channel_id'").fetchone()
+        if ai_chan and str(message.channel.id) == ai_chan[0]:
+            async with message.channel.typing():
+                try:
+                    self.save_msg(message.channel.id, "user", f"{message.author.name}: {message.content}")
+                    history = self.get_history(message.channel.id)
+                    
+                    response = self.groq.chat.completions.create(
+                        messages=[{"role": "system", "content": "You are Pigeon. Gen Z bird. Max 20 words. If nice, be chill (bruh, lol). If swearing, SWEAR BACK IN ALL CAPS. 1 emoji."}] + history,
+                        model="llama-3.1-8b-instant"
+                    ).choices[0].message.content
+
+                    self.save_msg(message.channel.id, "assistant", response)
+                    await self.log_interaction(message, response)
+                    await message.reply(response)
+                except Exception as e:
+                    await message.reply(f"🐦 **BRAIN FREEZE:** `{str(e)[:40]}`")
+
+    async def log_interaction(self, message, response):
+        log_chan = self.bot.get_channel(LOG_CHANNEL_ID)
+        if log_chan:
+            embed = discord.Embed(title="📜 Bird Log", color=0x3498db, timestamp=datetime.datetime.now())
+            embed.add_field(name="User", value=message.author.name, inline=True)
+            embed.add_field(name="Context", value=f"**U:** {message.content}\n**P:** {response}", inline=False)
+            await log_chan.send(embed=embed)
+
+# --- MAIN BOT CLASS ---
 class PigeonBot(commands.Bot):
     def __init__(self):
-        intents = discord.Intents.all()
-        super().__init__(command_prefix="p!", intents=intents)
-        self.groq_client = Groq(api_key=GROQ_API_KEY)
-        init_db()
+        super().__init__(command_prefix="p!", intents=discord.Intents.all())
 
     async def setup_hook(self):
+        Database.init()
+        await self.add_cog(Moderation(self))
+        await self.add_cog(AIBrain(self))
         await self.tree.sync()
-        print(f"Pigeon is live. Made by Willz (typertyper)")
+        print("🐦 Pigeon Pro is airborne. Made by Willz (typertyper)")
+
+    @commands.hybrid_command(name="ping")
+    async def ping(self, ctx):
+        await ctx.send(f"🏓 Pong! {round(self.latency * 1000)}ms. fr.")
+
+    @app_commands.command(name="set_ai_channel")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def set_ai(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        Database.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('ai_channel_id', ?)", (str(channel.id),))
+        await interaction.response.send_message(f"🐦 Territory claimed: {channel.mention}")
 
 bot = PigeonBot()
-
-# --- Commands ---
-
-@bot.tree.command(name="serverinfo", description="Nest stats check.")
-async def serverinfo(interaction: discord.Interaction):
-    guild = interaction.guild
-    owner = guild.owner.mention if guild.owner else "The Head Pigeon"
-    poops = get_setting("poop_count", "0")
-    
-    embed = discord.Embed(title=f"🐦 {guild.name} NEST", color=0x3498db)
-    embed.add_field(name="Birds", value=f"**{guild.member_count}**", inline=True)
-    embed.add_field(name="Owner", value=owner, inline=True)
-    embed.add_field(name="Poops", value=f"**{poops}**", inline=True)
-    embed.set_footer(text="Made by Willz (typertyper)")
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name="set_ai_channel", description="Set the AI chat channel.")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_ai(interaction: discord.Interaction, channel: discord.TextChannel):
-    set_setting("ai_channel_id", channel.id)
-    await interaction.response.send_message(f"🐦 Territory claimed: {channel.mention}")
-
-@bot.tree.command(name="poop", description="Drop a bomb.")
-async def poop(interaction: discord.Interaction, member: discord.Member):
-    count = int(get_setting("poop_count", "0")) + 1
-    set_setting("poop_count", count)
-    embed = discord.Embed(title="⚠️ PIGEON STRIKE", description=f"**POOPED ON {member.mention}!** 💩", color=0xFF4500)
-    embed.set_image(url="https://media.giphy.com/media/l3vR9RE5Xkk9778is/giphy.gif")
-    embed.set_footer(text="Made by Willz (typertyper)")
-    await interaction.response.send_message(embed=embed)
-
-# --- AI Brain & Personality ---
-
-@bot.event
-async def on_message(message):
-    if message.author == bot.user: return
-
-    ai_channel_id = get_setting("ai_channel_id")
-    if ai_channel_id and str(message.channel.id) == str(ai_channel_id):
-        async with message.channel.typing():
-            try:
-                # 1. Memory Logic (6 message limit to prevent 429 errors)
-                user_msg = f"{message.author.display_name}: {message.content}"
-                save_chat(message.channel.id, "user", user_msg)
-                history = get_history(message.channel.id, limit=6)
-                
-                # 2. Personality Prompt
-                messages_to_send = [
-                    {
-                        "role": "system", 
-                        "content": "You are Pigeon. Max 20 words. If users are nice, be a nice Gen Z bot (bruh, lol, dry). IF THEY SWEAR AT YOU, SWEAR BACK IN ALL CAPS. Use 1 emoji. Be an AI bot fr."
-                    }
-                ] + history
-
-                # 3. Request (Using 8b-instant for speed & stability)
-                chat_completion = bot.groq_client.chat.completions.create(
-                    messages=messages_to_send,
-                    model="llama-3.1-8b-instant",
-                    temperature=0.7
-                )
-                response = chat_completion.choices[0].message.content
-
-                # 4. Save Reply & Log to Log Channel
-                save_chat(message.channel.id, "assistant", response)
-                
-                log_chan = bot.get_channel(LOG_CHANNEL_ID)
-                if log_chan:
-                    log_embed = discord.Embed(title="📜 Bird Log", color=0x95a5a6)
-                    log_embed.add_field(name="User", value=message.author.name)
-                    log_embed.add_field(name="Chat", value=f"**U:** {message.content}\n**P:** {response}")
-                    log_embed.set_footer(text=f"Channel: {message.channel.name}")
-                    await log_chan.send(embed=log_embed)
-
-                await message.reply(response)
-            
-            except Exception as e:
-                print(f"AI ERROR: {e}")
-                # This helps you see the error in Discord if it crashes
-                await message.reply(f"🐦 **BRAIN FREEZE:** `{str(e)[:50]}`")
-
 bot.run(TOKEN)
